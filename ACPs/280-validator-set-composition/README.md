@@ -10,7 +10,9 @@
 
 This ACP standardizes a composition layer that lets multiple security modules share a single [ACP-99](../99-validatorsetmanager-contract/README.md) ValidatorManager.
 
-We define `IBalancerValidatorManager`, which wraps a ValidatorManager and re-exposes its lifecycle interface through delegation, adding per-module weight partitioning and module-exclusive validator assignment. We also define `ISecurityModule`, a minimal interface that security modules implement to integrate with a compliant balancer. Together, `ISecurityModule` and `IBalancerValidatorManager` define the module-balancer integration surface, while compliant balancers enforce a common set of behavioral rules for weight accounting, validator assignment, and lifecycle forwarding.
+We define `IBalancerValidatorManager`, which wraps a ValidatorManager and re-exposes its lifecycle interface through delegation. We also define `ISecurityModule`, a minimal interface that security modules implement to integrate with a compliant balancer.
+
+Together, `ISecurityModule` and `IBalancerValidatorManager` define a common module-balancer integration surface. Compliant balancers add per-module weight partitioning, module-exclusive validator assignment, and shared lifecycle forwarding rules so independently developed security modules can interoperate safely over one ValidatorManager.
 
 ## Motivation
 
@@ -26,9 +28,22 @@ This ACP standardizes such a composition layer, the "Balancer Validator Manager"
 
 ## Specification
 
-This standard defines a balancer contract that coordinates multiple security modules over a single ValidatorManager, the interfaces used between balancers and security modules, and the behavioral rules a compliant balancer must enforce so independently developed modules can interoperate safely over a shared ValidatorManager.
+This standard defines:
+
+- a balancer contract that coordinates multiple security modules over a single ValidatorManager
+- the interfaces used between balancers and security modules
+- the behavioral rules a compliant balancer must enforce so independently developed modules can interoperate safely over a shared ValidatorManager
 
 **Terminology:** This ACP uses "ValidatorManager" to refer to ACP-99's `ACP99Manager` contract (the concrete instance the balancer owns and delegates to). `IACP99Manager` refers to the Solidity interface for ACP-99's `ACP99Manager`. `PendingAdded` refers to the ACP-99 `ValidatorStatus` value assigned to a validator whose registration has been initiated but not yet acknowledged by the P-Chain.
+
+### Overview
+
+At a high level:
+
+- the balancer owns the underlying ValidatorManager
+- security modules initiate and complete validator lifecycle operations through the balancer
+- each validator is assigned to exactly one security module
+- the balancer enforces per-module weight accounting and module-isolation rules on top of ACP-99 behavior
 
 ```mermaid
 ---
@@ -57,9 +72,13 @@ graph LR
 
 The Balancer Validator Manager is the sole `owner` of the underlying ValidatorManager. This centralized ownership is required so that a single contract can enforce per-module weight caps and prevent cross-module interference. Security modules interact with the validator set exclusively through the balancer: initiate operations are gated by module assignment, and complete operations verify that the calling module is assigned to the validator being finalized.
 
-The exact ordering of these checks relative to the underlying ValidatorManager call is left to the implementer, provided all invariants hold within the same transaction. The balancer delegates all standard lifecycle functions to the owned ValidatorManager (`completeValidatorRegistration`, `completeValidatorRemoval`, `getValidator`, `l1TotalWeight`, `subnetID`, and resend functions for registration and removal messages), re-exposing them through `IBalancerValidatorManager`.
+The exact ordering of these checks relative to the underlying ValidatorManager call is left to the implementer, provided all invariants hold within the same transaction.
 
-`initializeValidatorSet` is delegated to the underlying ValidatorManager. This ACP does not standardize module assignment for the initial validator set. A compliant deployment must either:
+### Initial Validator Assignment
+
+`initializeValidatorSet` is delegated to the underlying ValidatorManager. This ACP does not standardize module assignment for the initial validator set.
+
+This is a deployment-time prerequisite. A compliant deployment must either:
 
 1. wrap an already-initialized ValidatorManager and assign all existing validators to modules during balancer initialization, or
 2. provide an implementation-specific initialization that atomically assigns every initial validator to a security module before any module-mediated operation is allowed.
@@ -70,7 +89,9 @@ Initialization is intentionally left implementation-specific because it is a one
 
 The interface extends `IACP99Manager` (the Solidity interface for ACP-99's `ACP99Manager`) rather than `IValidatorManager`, which is an icm-services implementation detail that adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). It declares the `initiate*` functions as `external`; ACP-99 specifies these as `internal`, and this ACP standardizes their external form for the delegation pattern.
 
-The resend functions for registration and removal originate from icm-services' `IValidatorManager` implementation and are included here because the delegation pattern requires them on the balancer surface. This ACP does not standardize auxiliary query functions such as node-to-validation lookup; security modules that require such lookups must treat them as implementation-specific extensions rather than part of the common composition surface. `PChainOwner` is defined in ACP-99 (originating from ACP-77) and included in `IACP99Manager`.
+The balancer delegates ACP-99 lifecycle functions to the owned ValidatorManager and re-exposes them through `IBalancerValidatorManager`. The resend functions for registration and removal originate from icm-services' `IValidatorManager` implementation and are included here because the delegation pattern requires them on the balancer surface.
+
+This ACP does not standardize auxiliary query functions such as node-to-validation lookup; security modules that require such lookups must treat them as implementation-specific extensions rather than part of the common composition surface. `PChainOwner` is defined in ACP-99 (originating from ACP-77) and included in `IACP99Manager`.
 
 ```solidity
 interface IBalancerValidatorManager is IACP99Manager {
@@ -173,7 +194,7 @@ interface IBalancerValidatorManager is IACP99Manager {
 }
 ```
 
-The `initiate*` and resend functions are declared directly in `IBalancerValidatorManager`; the `complete*` functions and view functions (`getValidator`, `l1TotalWeight`, `subnetID`) are inherited from `IACP99Manager`. All are delegated to the owned ValidatorManager, with module-authorization checks and per-module weight accounting added on top. `IBalancerValidatorManager` declares two module-specific events: `SetUpSecurityModule` (emitted on module registration, update, or removal) and `SecurityModuleWeightUpdated` (emitted when a module's current weight changes). All validator lifecycle events are emitted by the underlying ValidatorManager during delegation and are not re-declared.
+The `initiate*` and resend functions are declared directly in `IBalancerValidatorManager`; the `complete*` functions and view functions (`getValidator`, `l1TotalWeight`, `subnetID`) are inherited from `IACP99Manager`. `IBalancerValidatorManager` declares two module-specific events: `SetUpSecurityModule` (emitted on module registration, update, or removal) and `SecurityModuleWeightUpdated` (emitted when a module's current weight changes). All validator lifecycle events are emitted by the underlying ValidatorManager during delegation and are not re-declared.
 
 ### `ISecurityModule`
 
@@ -209,7 +230,9 @@ Every security module must implement `ISecurityModule`.
 
 `ISecurityModule` standardizes what a module exposes for completion of validator lifecycle operations. `IBalancerValidatorManager` standardizes what a module calls on the balancer. Together, these interfaces define the bidirectional module-balancer integration surface. This ACP does not standardize the module's own initiation policy or access-control model; those remain module-specific.
 
-The interface only defines completion functions. Initiation functions (e.g., `initiateValidatorRegistration`) are module-specific: a PoA module gates them behind `onlyOwner`, a PoS module gates them behind stake deposit logic. The completion functions are permissionless so that any caller (keepers, governance contracts, etc.) can finalize validator state after P-Chain acknowledgment, keeping the system moving regardless of the module's access control model.
+`ISecurityModule` only defines completion functions because module-specific initiation logic varies by security model. For example, a PoA module may gate initiation behind `onlyOwner`, while a PoS module may gate it behind stake deposit logic.
+
+The standardized `initiate*` interface lives on `IBalancerValidatorManager`, while `ISecurityModule` completion functions are permissionless so any caller (keepers, governance contracts, etc.) can finalize state after P-Chain acknowledgment, keeping the system moving regardless of the module's access control model.
 
 Each completion function must forward the call to the balancer, which in turn forwards to the underlying ValidatorManager. The security module must be the `msg.sender` to the balancer so the balancer can verify which module is calling.
 
@@ -217,43 +240,53 @@ Each completion function must forward the call to the balancer, which in turn fo
 
 These rules are normative for compliant balancers and are part of the interoperability surface. Implementations of `IBalancerValidatorManager` must satisfy:
 
-1. **Weight accounting and caps.** The balancer must track each module's current weight and update it per operation as follows:
+#### Weight Accounting and Caps
 
-   | Operation | Per-module weight change |
-   |-----------|------------------------|
-   | `initiateValidatorRegistration` | module weight **+= validator weight** |
-   | `initiateValidatorRemoval` | module weight **-= validator weight** |
-   | `initiateValidatorWeightUpdate` | module weight **+= (newWeight - oldWeight)** |
-   | `completeValidatorRegistration` | no per-module weight change |
-   | `completeValidatorRemoval` (active/removed validator) | no per-module weight change (weight was already deducted at initiation) |
-   | `completeValidatorRemoval` (expired `PendingAdded`) | module weight **-= registration weight** (see expired registration recovery below) |
-   | `completeValidatorWeightUpdate` | no per-module weight change (nonce bookkeeping only) |
+The balancer must track each module's current weight and update it per operation as follows:
 
-   Per-module weight changes take effect at initiation time because the balancer must mirror the underlying ValidatorManager's `l1TotalWeight()` accounting. This is manager-chain accounting only: ACP-99's completion-time language governs validator activation and P-Chain consensus effect, while this ACP's initiation-time rule governs balancer-local module accounting. The P-Chain applies the weight change to consensus after its Warp acknowledgment completes the round-trip.
+| Operation | Per-module weight change |
+|-----------|------------------------|
+| `initiateValidatorRegistration` | module weight **+= validator weight** |
+| `initiateValidatorRemoval` | module weight **-= validator weight** |
+| `initiateValidatorWeightUpdate` | module weight **+= (newWeight - oldWeight)** |
+| `completeValidatorRegistration` | no per-module weight change |
+| `completeValidatorRemoval` (active/removed validator) | no per-module weight change (weight was already deducted at initiation) |
+| `completeValidatorRemoval` (expired `PendingAdded`) | module weight **-= registration weight** (see expired registration recovery below) |
+| `completeValidatorWeightUpdate` | no per-module weight change (nonce bookkeeping only) |
 
-   Note: This accounting model is also consistent with existing ValidatorManager-based implementations such as Ava Labs' `icm-services`, which update manager-chain accounting before the P-Chain acknowledgment round-trip completes.
+Per-module weight changes take effect at initiation time because the balancer must mirror the underlying ValidatorManager's `l1TotalWeight()` accounting. This is manager-chain accounting only: ACP-99's completion-time language governs validator activation and P-Chain consensus effect, while this ACP's initiation-time rule governs balancer-local module accounting.
 
-   **Global invariant:** the sum of all modules' current weights must equal the ValidatorManager's `l1TotalWeight()` after each state-changing operation completes. For each registered module, its current weight must not exceed its configured `maxWeight`; the balancer must revert any `initiateValidatorRegistration` or `initiateValidatorWeightUpdate` that would violate this constraint. When updating an existing module's `maxWeight`, the new value must not be lower than the module's current weight.
+**Global invariant:** the sum of all modules' current weights must equal the ValidatorManager's `l1TotalWeight()` after each state-changing operation completes.
 
-   When `completeValidatorRemoval` is called for a validator whose registration expired (i.e., the validator was in `PendingAdded` status and the P-Chain did not acknowledge it within the expiry window), the balancer must deduct the validator's registration weight from the module's current weight. This is the only `complete*` path that changes per-module weight, because `initiateValidatorRemoval` was never called to deduct it. The balancer must also decrement the module's validator count and clear the validator-to-module assignment.
+For each registered module, its current weight must not exceed its configured `maxWeight`; the balancer must revert any `initiateValidatorRegistration` or `initiateValidatorWeightUpdate` that would violate this constraint. When updating an existing module's `maxWeight`, the new value must not be lower than the module's current weight.
 
-2. **Validator-to-module assignment.** Each validator must be assigned to exactly one security module. Only the assigned module may call initiate or complete operations on that validator; the balancer must revert if a non-assigned module attempts to operate on a validator. (Shared ownership would require weight-split accounting and cross-module coordination on removal; separate validators per module achieves the same result with less complexity.)
+When `completeValidatorRemoval` is called for a validator whose registration expired (i.e., the validator was in `PendingAdded` status and the P-Chain did not acknowledge it within the expiry window), the balancer must deduct the validator's registration weight from the module's current weight. This is the only `complete*` path that changes per-module weight, because `initiateValidatorRemoval` was never called to deduct it. The balancer must also decrement the module's validator count and clear the validator-to-module assignment.
 
-   A validator must be assigned to the calling module at `initiateValidatorRegistration` time, and the assignment must be cleared on `completeValidatorRemoval`. All validators present at `initializeValidatorSet` time must be assigned to a security module before any module-mediated operation is allowed; the balancer must not allow `initiate*` or `complete*` calls for any validator that lacks a module assignment.
+#### Validator-to-Module Assignment
 
-   A module must not be removed (maxWeight set to 0) while it has assigned validators or non-zero weight. The balancer must track per-module validator count (increment on `initiateValidatorRegistration`, decrement on `completeValidatorRemoval`) to enforce this invariant.
+Each validator must be assigned to exactly one security module. Only the assigned module may call initiate or complete operations on that validator; the balancer must revert if a non-assigned module attempts to operate on a validator. Shared ownership is intentionally excluded because it would require weight-split accounting and cross-module coordination on removal.
 
-3. **Module registration.** `setUpSecurityModule` must be restricted to the balancer's admin (e.g., governance contract, multisig, or timelock).
+A validator must be assigned to the calling module at `initiateValidatorRegistration` time, and the assignment must be cleared on `completeValidatorRemoval`.
 
-4. **Operational guards.** The balancer must not allow `initiateValidatorWeightUpdate` or `initiateValidatorRemoval` on a validator that has a pending (unacknowledged) weight update. The balancer must not allow `initiateValidatorRegistration` with a `weight` of 0, nor `initiateValidatorWeightUpdate` with a `newWeight` of 0; weight-to-zero operations must use `initiateValidatorRemoval` instead. `completeValidatorWeightUpdate` must reject acknowledgments with a nonce ≤ the validator's last received nonce (stale/duplicate) and must reject nonces > the validator's last sent nonce (future/invalid).
+All validators present at `initializeValidatorSet` time must be assigned to a security module before any module-mediated operation is allowed; the balancer must not allow `initiate*` or `complete*` calls for any validator that lacks a module assignment.
 
-### Module Registration
+A module must not be removed (`maxWeight` set to `0`) while it has assigned validators or non-zero weight. The balancer must track per-module validator count (increment on `initiateValidatorRegistration`, decrement on `completeValidatorRemoval`) to enforce this invariant.
 
-The balancer's admin (typically a governance contract or multisig) manages security module registration through `setUpSecurityModule`:
+#### Module Registration
+
+`setUpSecurityModule` must be restricted to the balancer's admin (e.g., governance contract, multisig, or timelock).
 
 - **Register:** Call `setUpSecurityModule(module, maxWeight)` with `maxWeight > 0`.
 - **Update cap:** Call `setUpSecurityModule(module, newMaxWeight)`. The new cap must be at least the module's current weight.
 - **Remove:** Call `setUpSecurityModule(module, 0)`. The module must have zero current weight and no assigned validators.
+
+#### Operational Guards
+
+The balancer must not allow `initiateValidatorWeightUpdate` or `initiateValidatorRemoval` on a validator that has a pending (unacknowledged) weight update.
+
+The balancer must not allow `initiateValidatorRegistration` with a `weight` of 0, nor `initiateValidatorWeightUpdate` with a `newWeight` of 0; weight-to-zero operations must use `initiateValidatorRemoval` instead.
+
+`completeValidatorWeightUpdate` must reject acknowledgments with a nonce <= the validator's last received nonce (stale/duplicate) and must reject nonces > the validator's last sent nonce (future/invalid).
 
 ### Expired Registrations
 
@@ -261,7 +294,7 @@ Each validator registration includes an expiry (per ACP-77). If the P-Chain does
 
 ### Message Resending
 
-Warp messages may fail to be delivered. ValidatorManager implementations (such as icm-services') expose resend functions for registration and removal messages (`resendRegisterValidatorMessage`, `resendValidatorRemovalMessage`), which the balancer delegates directly. No equivalent exists for weight updates, so the balancer must construct and re-emit weight update messages itself. This is why `resendValidatorWeightUpdate` is defined on `IBalancerValidatorManager` rather than delegated. All resend functions can be permissionless since they only re-emit existing messages without changing state.
+Warp messages may fail to be delivered. ValidatorManager implementations (such as icm-services') expose resend functions for registration and removal messages (`resendRegisterValidatorMessage`, `resendValidatorRemovalMessage`), which the balancer delegates directly. No equivalent helper exists for weight updates, so `resendValidatorWeightUpdate` requires the balancer to construct and re-emit the message itself rather than delegate to the underlying ValidatorManager. All resend functions can be permissionless since they only re-emit existing messages without changing state.
 
 ## Backwards Compatibility
 
@@ -269,7 +302,7 @@ This ACP is purely additive and does not modify ACP-77 or ACP-99:
 
 - Existing ValidatorManager deployments continue to function unchanged.
 - The balancer is deployed as a new contract that becomes the `owner` of an existing or new ValidatorManager.
-- L1s currently using a single-owner model (e.g., a `PoAManager` or `StakingManager` as the ValidatorManager owner) can migrate to the composition pattern (see Appendix A for the full process).
+- L1s currently using a single-owner model (e.g., a `PoAManager` or `StakingManager` as the ValidatorManager owner) can migrate to the composition pattern (see Appendix A for an informative migration path).
 
 ## Reference Implementation
 
