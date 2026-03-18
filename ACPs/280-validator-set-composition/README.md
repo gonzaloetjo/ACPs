@@ -55,7 +55,9 @@ graph LR
 
 **Complete flow:** After the P-Chain acknowledges the operation (via a Warp message back to the ValidatorManager), anyone can call `complete*` on the security module, which forwards through the balancer to the ValidatorManager to finalize the state change. (ACP-99's multi-contract example routes completion calls directly to the manager; this ACP routes them through the security module so the balancer can verify module assignment before forwarding.)
 
-The Balancer Validator Manager is the sole `owner` of the underlying ValidatorManager. This centralized ownership is required so that a single contract can enforce per-module weight caps and prevent cross-module interference. Security modules interact with the validator set exclusively through the balancer: initiate operations are gated by module assignment, and complete operations verify that the calling module is assigned to the validator being finalized. The exact ordering of these checks relative to the underlying ValidatorManager call is left to the implementer, provided all invariants hold within the same transaction. The balancer delegates all standard lifecycle functions to the owned ValidatorManager (`completeValidatorRegistration`, `completeValidatorRemoval`, `getValidator`, `l1TotalWeight`, `subnetID`, and resend functions for registration and removal messages), re-exposing them through `IBalancerValidatorManager`.
+The Balancer Validator Manager is the sole `owner` of the underlying ValidatorManager. This centralized ownership is required so that a single contract can enforce per-module weight caps and prevent cross-module interference. Security modules interact with the validator set exclusively through the balancer: initiate operations are gated by module assignment, and complete operations verify that the calling module is assigned to the validator being finalized.
+
+The exact ordering of these checks relative to the underlying ValidatorManager call is left to the implementer, provided all invariants hold within the same transaction. The balancer delegates all standard lifecycle functions to the owned ValidatorManager (`completeValidatorRegistration`, `completeValidatorRemoval`, `getValidator`, `l1TotalWeight`, `subnetID`, and resend functions for registration and removal messages), re-exposing them through `IBalancerValidatorManager`.
 
 `initializeValidatorSet` is delegated to the underlying ValidatorManager. This ACP does not standardize module assignment for the initial validator set. A compliant deployment must either:
 
@@ -66,7 +68,9 @@ Initialization is intentionally left implementation-specific because it is a one
 
 ### `IBalancerValidatorManager`
 
-The interface extends `IACP99Manager` (the Solidity interface for ACP-99's `ACP99Manager`) rather than `IValidatorManager`, which is an icm-services implementation detail that adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). It declares the `initiate*` functions as `external`; ACP-99 specifies these as `internal`, and this ACP standardizes their external form for the delegation pattern. The resend functions for registration and removal originate from icm-services' `IValidatorManager` implementation and are included here because the delegation pattern requires them on the balancer surface. This ACP does not standardize auxiliary query functions such as node-to-validation lookup; security modules that require such lookups must treat them as implementation-specific extensions rather than part of the common composition surface. `PChainOwner` is defined in ACP-99 (originating from ACP-77) and included in `IACP99Manager`.
+The interface extends `IACP99Manager` (the Solidity interface for ACP-99's `ACP99Manager`) rather than `IValidatorManager`, which is an icm-services implementation detail that adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). It declares the `initiate*` functions as `external`; ACP-99 specifies these as `internal`, and this ACP standardizes their external form for the delegation pattern.
+
+The resend functions for registration and removal originate from icm-services' `IValidatorManager` implementation and are included here because the delegation pattern requires them on the balancer surface. This ACP does not standardize auxiliary query functions such as node-to-validation lookup; security modules that require such lookups must treat them as implementation-specific extensions rather than part of the common composition surface. `PChainOwner` is defined in ACP-99 (originating from ACP-77) and included in `IACP99Manager`.
 
 ```solidity
 interface IBalancerValidatorManager is IACP99Manager {
@@ -211,7 +215,7 @@ Each completion function must forward the call to the balancer, which in turn fo
 
 ### Balancer Behavioral Rules
 
-The following rules are normative parts of the interoperability contract. Interface compatibility alone is insufficient for composition unless the balancer also enforces these behavioral requirements. Implementations of `IBalancerValidatorManager` must satisfy:
+These rules are normative for compliant balancers and are part of the interoperability surface. Implementations of `IBalancerValidatorManager` must satisfy:
 
 1. **Weight accounting and caps.** The balancer must track each module's current weight and update it per operation as follows:
 
@@ -253,7 +257,7 @@ The balancer's admin (typically a governance contract or multisig) manages secur
 
 ### Expired Registrations
 
-Each validator registration includes an expiry (per ACP-77). If the P-Chain does not acknowledge the registration before it expires, the validator can be cleaned up via `completeValidatorRemoval` (see expired registration recovery in Balancer Rules).
+Each validator registration includes an expiry (per ACP-77). If the P-Chain does not acknowledge the registration before it expires, the validator can be cleaned up via `completeValidatorRemoval` (see expired registration recovery in Balancer Behavioral Rules).
 
 ### Message Resending
 
@@ -271,6 +275,8 @@ This ACP is purely additive and does not modify ACP-77 or ACP-99:
 
 A reference implementation is available in the [Suzaku Contracts Library](https://github.com/suzaku-network/suzaku-contracts-library):
 
+Note: The reference implementation's `IBalancerValidatorManager` currently extends icm-services' `IValidatorManager` rather than `IACP99Manager` as specified in this ACP. This adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). The implementation will be aligned before this ACP is marked Implementable.
+
 - [`BalancerValidatorManager.sol`](https://github.com/suzaku-network/suzaku-contracts-library/blob/balancer-validator-manager-v1.0.1/src/contracts/ValidatorManager/BalancerValidatorManager.sol) - balancer implementation
 - [`ISecurityModule.sol`](https://github.com/suzaku-network/suzaku-contracts-library/blob/balancer-validator-manager-v1.0.1/src/interfaces/ValidatorManager/ISecurityModule.sol) - security module interface
 - [`PoASecurityModule.sol`](https://github.com/suzaku-network/suzaku-contracts-library/blob/balancer-validator-manager-v1.0.1/src/contracts/ValidatorManager/SecurityModule/PoASecurityModule.sol) - PoA security module
@@ -283,8 +289,6 @@ A more advanced security module implementing epoch-based restaking is available 
 
 Ava Labs' existing controllers (`PoAManager`, `StakingManager`) can also be adapted as security modules with minimal changes (see Appendix A).
 
-Note: The reference implementation's `IBalancerValidatorManager` currently extends icm-services' `IValidatorManager` rather than `IACP99Manager` as specified in this ACP. This adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). The implementation will be aligned before this ACP is marked Implementable.
-
 ## Security Considerations
 
 The completion functions are called by security modules (external contracts), which introduces a reentrancy surface if a module is malicious or compromised. Implementations should use reentrancy guards on state-changing functions to prevent a malicious module from re-entering the balancer mid-operation and corrupting weight accounting or validator assignment state.
@@ -294,7 +298,6 @@ ValidatorManager implementations may enforce churn limits that bound how much to
 The balancer's per-module weight accounting tracks manager-chain state only. ACP-77 defines P-Chain-side events (balance exhaustion, `DisableL1ValidatorTx`, `IncreaseL1ValidatorBalanceTx`) that change a validator's consensus participation without producing a Warp message to the manager chain, so the balancer cannot observe them. Operators should monitor P-Chain validator status and balance levels off-chain, and use `initiateValidatorRemoval` through the appropriate security module to reconcile stale validators when divergence is detected.
 
 If a security module becomes non-functional (implementation bug, lost upgrade keys, or malicious self-destruct), validators assigned to that module cannot be removed or updated through the standard interface. The module's weight remains permanently allocated, its entry cannot be removed, and the stuck validators persist on the P-Chain. In ACP-99's single-owner model, a bricked owner locks the entire validator set; in the composition model, a bricked module locks only its own validators while other modules retain full control of theirs. However, there is no standard (non-upgrade) path to reclaim the locked weight, and the accounting divergence persists until recovery.
-
 
 ## Open Questions
 
@@ -350,7 +353,13 @@ This appendix describes a migration path for L1s that currently use a single-own
 
 ### Adapting Existing icm-services Controllers
 
-Ava Labs' `PoAManager` and `StakingManager` already compose a ValidatorManager via an `IValidatorManager` reference (icm-services' implementation-level interface, which extends `IACP99Manager` with additional functions). Adapting them as security modules requires implementing `ISecurityModule` and changing the VM reference type to `IBalancerValidatorManager` (from `IValidatorManager` in `StakingManager`, or `IValidatorManagerExternalOwnable` in `PoAManager`). The 5 lifecycle function signatures (`initiate*` and resend) are ABI-identical between the two interfaces; the 3 `IValidatorManager`-only functions (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`) are not part of the composition surface and are not needed by controllers acting as security modules. Controllers must also expose the 3 `ISecurityModule` completion functions (`completeValidatorRegistration`, `completeValidatorRemoval`, `completeValidatorWeightUpdate`) as external entrypoints that forward through the balancer. For upgradeable contracts like `StakingManager`, this is a storage-compatible change (the storage slot holds a raw address). `PoAManager` uses an immutable reference and holds no user state, so a fresh deployment is needed.
+Ava Labs' `PoAManager` and `StakingManager` already compose a ValidatorManager via implementation-level interfaces. Adapting them as security modules requires a small set of changes:
+
+- Change the VM reference type to `IBalancerValidatorManager` (from `IValidatorManager` in `StakingManager`, or `IValidatorManagerExternalOwnable` in `PoAManager`).
+- Reuse the 5 ABI-identical lifecycle entrypoints (`initiate*` and resend).
+- Avoid depending on the `IValidatorManager`-only functions (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`), which are not part of the composition surface.
+- Expose the 3 `ISecurityModule` completion functions (`completeValidatorRegistration`, `completeValidatorRemoval`, `completeValidatorWeightUpdate`) as external entrypoints that forward through the balancer.
+- For upgradeable contracts like `StakingManager`, this is a storage-compatible change because the storage slot holds a raw address. `PoAManager` uses an immutable reference and holds no user state, so a fresh deployment is needed.
 
 ## Acknowledgments
 
