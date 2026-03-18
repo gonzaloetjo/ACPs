@@ -10,7 +10,7 @@
 
 This ACP standardizes a composition layer that lets multiple security modules share a single [ACP-99](../99-validatorsetmanager-contract/README.md) ValidatorManager.
 
-We define `IBalancerValidatorManager`, which wraps a ValidatorManager and re-exposes its lifecycle interface through delegation, adding per-module weight partitioning and module-exclusive validator assignment. We also define `ISecurityModule`, a minimal interface that security modules implement to plug into any compliant balancer. Security modules call the balancer using the standard lifecycle functions declared in `IBalancerValidatorManager`, so modules from different teams can plug into any compliant balancer.
+We define `IBalancerValidatorManager`, which wraps a ValidatorManager and re-exposes its lifecycle interface through delegation, adding per-module weight partitioning and module-exclusive validator assignment. We also define `ISecurityModule`, a minimal interface that security modules implement to integrate with a compliant balancer. Together, `ISecurityModule` and `IBalancerValidatorManager` define the module-balancer integration surface, while compliant balancers enforce a common set of behavioral rules for weight accounting, validator assignment, and lifecycle forwarding.
 
 ## Motivation
 
@@ -22,11 +22,11 @@ This lack of a standard composition layer also limits how L1s can evolve their v
 
 A composition layer would also enable more specialized configurations: for example, an L1 could partition its validator set between a compliance-gated module for institutional or jurisdiction-restricted validators and a permissionless module for community validators, or use separate modules with independent staking logic for different collateral types.
 
-This ACP standardizes such a composition layer, the "Balancer Validator Manager" (so called because it balances validator weight across multiple security modules), that wraps a ValidatorManager and defines the standard interface through which security modules plug in. This gives security modules a common integration surface, whether they originate from icm-services, third-party implementations, or custom builds.
+This ACP standardizes such a composition layer, the "Balancer Validator Manager" (so called because it balances validator weight across multiple security modules), that wraps a ValidatorManager and defines both the integration interfaces and the behavioral rules required for modules to compose safely over one ValidatorManager. By standardizing this surface, the ACP reduces implementation-specific coupling for security modules, whether they originate from icm-services, third-party implementations, or custom builds.
 
 ## Specification
 
-This standard defines a balancer contract that coordinates multiple security modules over a single ValidatorManager, along with the interface that security modules implement to plug in.
+This standard defines a balancer contract that coordinates multiple security modules over a single ValidatorManager, the interfaces used between balancers and security modules, and the behavioral rules a compliant balancer must enforce so independently developed modules can interoperate safely over a shared ValidatorManager.
 
 **Terminology:** This ACP uses "ValidatorManager" to refer to ACP-99's `ACP99Manager` contract (the concrete instance the balancer owns and delegates to). `IACP99Manager` refers to the Solidity interface for ACP-99's `ACP99Manager`. `PendingAdded` refers to the ACP-99 `ValidatorStatus` value assigned to a validator whose registration has been initiated but not yet acknowledged by the P-Chain.
 
@@ -203,13 +203,15 @@ interface ISecurityModule {
 
 Every security module must implement `ISecurityModule`.
 
+`ISecurityModule` standardizes what a module exposes for completion of validator lifecycle operations. `IBalancerValidatorManager` standardizes what a module calls on the balancer. Together, these interfaces define the bidirectional module-balancer integration surface. This ACP does not standardize the module's own initiation policy or access-control model; those remain module-specific.
+
 The interface only defines completion functions. Initiation functions (e.g., `initiateValidatorRegistration`) are module-specific: a PoA module gates them behind `onlyOwner`, a PoS module gates them behind stake deposit logic. The completion functions are permissionless so that any caller (keepers, governance contracts, etc.) can finalize validator state after P-Chain acknowledgment, keeping the system moving regardless of the module's access control model.
 
 Each completion function must forward the call to the balancer, which in turn forwards to the underlying ValidatorManager. The security module must be the `msg.sender` to the balancer so the balancer can verify which module is calling.
 
-### Balancer Rules
+### Balancer Behavioral Rules
 
-Implementations of `IBalancerValidatorManager` must satisfy the following rules:
+The following rules are normative parts of the interoperability contract. Interface compatibility alone is insufficient for composition unless the balancer also enforces these behavioral requirements. Implementations of `IBalancerValidatorManager` must satisfy:
 
 1. **Weight accounting and caps.** The balancer must track each module's current weight and update it per operation as follows:
 
