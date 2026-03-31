@@ -8,11 +8,11 @@
 
 ## Abstract
 
-An Avalanche L1 has one validator set, managed by one [ACP-99](../99-validatorsetmanager-contract/README.md) `ValidatorManager`. Today, a single security module (e.g., a `PoAManager` or `StakingManager`) owns that `ValidatorManager` and defines the rules for who can join the validator set and under what conditions. This ACP enables multiple security modules to share the same validator set, each enforcing its own security model over its partition of validators.
+This ACP standardizes a composition layer that allows multiple security modules to share one [ACP-99](../99-validatorsetmanager-contract/README.md) `ValidatorManager`, each governing its own partition of validators.
 
-We define two interfaces, `IBalancerValidatorManager` and `ISecurityModule`, and a set of behavioral rules that govern how they interact. The balancer owns the `ValidatorManager` contract and delegates validator lifecycle operations to registered security modules. Each module can implement any security model (permissioned, proof-of-stake, restaking, custom slashing logic, or models not yet conceived), while `ISecurityModule` standardizes the minimal surface every module must expose to integrate with a compliant balancer.
+Today, a single security module (e.g., a `PoAManager` or `StakingManager`) owns the `ValidatorManager` and defines who can join the validator set and under what conditions. This ACP defines two interfaces, `IBalancerValidatorManager` and `ISecurityModule`, and a set of behavioral rules that govern how they interact. The balancer owns the `ValidatorManager` contract and delegates validator lifecycle operations to registered security modules. Each module can implement any security model (permissioned, proof-of-stake, restaking, custom slashing logic, or models not yet conceived), while `ISecurityModule` standardizes the minimal surface every module must expose to integrate with a compliant balancer.
 
-Together, these interfaces allow independently developed security modules to coexist over one `ValidatorManager` with per-module weight caps, module-exclusive validator assignment, and gradual transition between security models.
+Together, these interfaces enable independently developed security modules to coexist over one `ValidatorManager` with per-module weight caps, module-exclusive validator assignment, and gradual transition between security models.
 
 ## Motivation
 
@@ -299,7 +299,7 @@ This ACP is purely additive and does not modify ACP-77 or ACP-99:
 
 A reference implementation is available in the [Suzaku Contracts Library](https://github.com/suzaku-network/suzaku-contracts-library):
 
-> Note: The reference implementation's `IBalancerValidatorManager` currently extends `icm-services`' `IValidatorManager` rather than `IACP99Manager` as specified in this ACP. This adds functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`). The implementation will be aligned before this ACP is marked Implementable.
+> Note: The reference implementation's `IBalancerValidatorManager` extends `icm-services`' `IValidatorManager` rather than `IACP99Manager`. This adds convenience functions outside the composition surface (`migrateFromV1`, `getNodeValidationID`, `getChurnPeriodSeconds`) that are not required by this standard.
 
 - [`BalancerValidatorManager.sol`](https://github.com/suzaku-network/suzaku-contracts-library/blob/balancer-validator-manager-v1.0.1/src/contracts/ValidatorManager/BalancerValidatorManager.sol) - balancer implementation
 - [`ISecurityModule.sol`](https://github.com/suzaku-network/suzaku-contracts-library/blob/balancer-validator-manager-v1.0.1/src/interfaces/ValidatorManager/ISecurityModule.sol) - security module interface
@@ -327,7 +327,9 @@ If a security module becomes non-functional (implementation bug, lost upgrade ke
 
 ### Should the standard include a recovery mechanism for bricked modules?
 
-If a security module becomes non-functional, validators assigned to it cannot be removed through the standard interface because all lifecycle operations are gated by module assignment. The P-Chain's `DisableL1ValidatorTx` can stop consensus participation via the `disableOwner` keys, but does not remove the validator or fix manager-chain accounting. The current specification relies on contract upgradeability as the primary recovery path. Possible alternatives include:
+If a security module becomes non-functional, validators assigned to it cannot be removed through the standard interface because all lifecycle operations are gated by module assignment. The P-Chain's `DisableL1ValidatorTx` can stop consensus participation via the `disableOwner` keys, but does not remove the validator or fix manager-chain accounting.
+
+This specification intentionally omits a built-in recovery path: contract upgradeability is the expected mechanism, consistent with ACP-99's reliance on the owner's upgradeability for analogous scenarios. Adding a standard recovery function would weaken module isolation, the core safety property of this design. Possible alternatives that could be considered:
 
 - **Admin force-removal:** an admin-gated function that bypasses module assignment and initiates validator removal directly. This breaks the module isolation guarantee.
 - **Admin reassignment:** an admin-gated function that moves a validator's module assignment to a functional module, which then performs normal removal. This reuses the existing lifecycle but grants admin the power to redirect any validator.
@@ -337,7 +339,9 @@ Each option trades module isolation for recoverability. We welcome discussion on
 
 ### Should module registration include a mandatory delay?
 
-The current specification allows `setUpSecurityModule` to take effect immediately. Comparable multi-party staking coordination systems enforce protocol-level delays (days to weeks) on analogous operations. However, ACP-99 does not require any delay on the ValidatorManager owner's actions, and a mandatory delay could interfere with legitimate emergency operations (e.g., registering a replacement module when another is compromised). We welcome discussion on whether a delay should be part of the standard interface, left to implementors, or specified as a deployment recommendation.
+This specification allows `setUpSecurityModule` to take effect immediately. This is consistent with ACP-99, which does not require any delay on the `ValidatorManager` owner's actions. A mandatory delay could also interfere with legitimate emergency operations (e.g., registering a replacement module when another is compromised).
+
+That said, comparable multi-party staking coordination systems enforce protocol-level delays (days to weeks) on analogous operations, and a delay would give module operators time to react to unexpected changes. We welcome discussion on whether a delay should be part of the standard interface, left to implementors, or specified as a deployment recommendation.
 
 ## Appendix A: Migration from Single-Owner ValidatorManager (Informative)
 
